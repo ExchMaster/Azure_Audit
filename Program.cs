@@ -57,16 +57,16 @@ namespace Azure_Audit
         }
         // An example JSON object, with key/value pairs
         //static string json = @"[{""DemoField1"":""ForReal"",""DemoField2"":""DemoValue2""},{""DemoField3"":""DemoValue3"",""DemoField4"":""DemoValue4""}]";
-        static string json = "[{\"DemoField1\":\"modEscapeChar\",\"DemoField2\":\"DemoValue2\"},{\"DemoField3\":\"DemoValue3\",\"DemoField4\":\"DemoValue4\"}]";
+        static string json = "[{\"Field1\":\"Value1\",\"Field2\":\"Value2\"},{\"Field3\":\"Value3\",\"Field4\":\"Value4\"}]";
 
         // Update customerId to your Log Analytics workspace ID
-        static string customerId = "26dddbb4-2264-4b19-b327-673e47acee98";
+        /*static string customerId = "26dddbb4-2264-4b19-b327-673e47acee98";
 
         // For sharedKey, use either the primary or the secondary Connected Sources client authentication key   
         static string sharedKey = "WW+gvT2ubjqMnaw5P8dKSPxTQADJY4luUX9uewHpTFNj15qHAnHcXkR3cMqqlXZNKRp/TBS4+q9oPWmBudDnzA==";
-
+ */
         // LogName is name of the event type that is being submitted to Log Analytics
-        static string LogName = "AzureAudit";
+        static string LogName = "Azure_Audit";
 
         // You can use an optional field to specify the timestamp from the data. If the time field is not specified, Log Analytics assumes the time is the message ingestion time
         static string TimeStampField = "datestring";
@@ -82,7 +82,7 @@ namespace Azure_Audit
                 return Convert.ToBase64String(hash);
             }
         }
-        public static void prepForOMS(string json)
+        public static void prepForOMS(string json, string customerId, string sharedKey)
         {
             //var datestring = DateTime.UtcNow.ToLocalTime().ToString("r");
             var datestring = DateTime.UtcNow.ToString("r");
@@ -90,10 +90,10 @@ namespace Azure_Audit
             string stringToHash = "POST\n" + jsonBytes.Length + "\napplication/json\n" + "x-ms-date:" + datestring + "\n/api/logs";
             string hashedString = BuildSignature(stringToHash, sharedKey);
             string signature = "SharedKey " + customerId + ":" + hashedString;
-            PostData(signature, datestring, json);
+            PostData(signature, datestring, json, customerId);
 
         }
-        public static void PostData(string signature, string date, string json)
+        public static void PostData(string signature, string date, string json, string customerId)
         {
             try
             {
@@ -119,19 +119,21 @@ namespace Azure_Audit
                 Console.WriteLine("API Post Exception: " + excep.Message);
             }
         }
-        private static string[] GetSecretFromKeyVault(AzureServiceTokenProvider azureServiceTokenProvider)
+        private static string[] GetSecretFromKeyVault(AzureServiceTokenProvider azureServiceTokenProvider, string keyVaultName)
         {
-        string keyVaultName = "jaiKV1";
         string srvprinappID = "appID";
         string srvprinkey = "key";
         string srvprindefaultSubscription = "defaultSubscription";
         string srvprintenantID = "tenantID";
-        string[] arrCreds = new string[] {srvprinappID,srvprinkey,srvprindefaultSubscription,srvprintenantID};
+        string omsCustomerID = "omsID";
+        string omsKey = "omsKey";
+
+        string[] arrCreds = new string[] {srvprinappID,srvprinkey,srvprindefaultSubscription,srvprintenantID,omsCustomerID,omsKey};
 
             KeyVaultClient kv = new KeyVaultClient(new KeyVaultClient.AuthenticationCallback(azureServiceTokenProvider.KeyVaultTokenCallback));
             try
             {
-                for(int i = 0; i < 4; i++){
+                for(int i = 0; i < 6; i++){
                 var secret = kv
                     .GetSecretAsync($"https://{keyVaultName}.vault.usgovcloudapi.net/secrets/{arrCreds[i]}").Result;
 
@@ -148,10 +150,10 @@ namespace Azure_Audit
 
         static void Main(string[] args)
         {
-            string[] srvPrinCreds = new string[4];
-            
+            string[] srvPrinCreds = new string[6];
+            string keyVaultName = System.Environment.GetEnvironmentVariable("keyVaultName");
             AzureServiceTokenProvider azureServiceTokenProvider = new AzureServiceTokenProvider();
-            srvPrinCreds = GetSecretFromKeyVault(azureServiceTokenProvider);
+            srvPrinCreds = GetSecretFromKeyVault(azureServiceTokenProvider,keyVaultName);            
 
             while (true)
             {
@@ -235,7 +237,7 @@ namespace Azure_Audit
                         if (!refSubFQIDs.SequenceEqual(refSubDefScopes))
                         {
                             json = $"[{{\"Category\":\"Warning\",\"Tenant ID: \":\"{credentials.TenantId}\",\"RBAC Custom Role Name\":\"{rDefinition.RoleName}\",\"Description\":\"Role definition scope does not include all accessible tenant subscriptions.  This role will not be avaliable for assignment for all missing subscriptions.\",\"Resolution URI\":\"https://docs.microsoft.com/en-us/azure/role-based-access-control/custom-roles-powershell\"}}]";
-                            prepForOMS(json);
+                            prepForOMS(json,srvPrinCreds[4],srvPrinCreds[5]);
                         }
                     }
 
@@ -244,7 +246,7 @@ namespace Azure_Audit
                 {
                     refSubDefCount = -1;
                     json = $"[{{\"Category\":\"Warning\",\"Reference Subscription Name\":\"{azure.GetCurrentSubscription().DisplayName}\",\"Reference Subscription ID\":\"{azure.SubscriptionId}\",\"Description\":\"Reference subcription does not have any custom roles defined\",\"Resolution URI\":\"https://docs.microsoft.com/en-us/azure/role-based-access-control/custom-roles-powershell\"}}]";
-                    prepForOMS(json);
+                    prepForOMS(json,srvPrinCreds[4],srvPrinCreds[5]);
                 }
                 var removeRefSub = subList.Single(r => r.SubscriptionId == refSubID);
                 subList.Remove(removeRefSub);
@@ -272,7 +274,7 @@ namespace Azure_Audit
                     foreach (var unassignedRole in unassignedRoles)
                     {
                         json = $"[{{\"Category\":\"Warning\",\"Subscription Name\":\"{cred.GetCurrentSubscription().DisplayName}\",\"Subscription ID\":\"{cred.SubscriptionId}\",\"Unassigned Role Name\":\"{unassignedRole.defName}\",\"Description\":\"Custom role '{unassignedRole.defName}' has been defined, but is not assigned in subscription '{cred.SubscriptionId}'\",\"Resolution URI\":\"https://docs.microsoft.com/en-us/azure/role-based-access-control/custom-roles-powershell\"}}]";
-                        prepForOMS(json);
+                        prepForOMS(json,srvPrinCreds[4],srvPrinCreds[5]);
                     }
                     //Reset defintion state so that the next subscription can be processed
                     foreach (var def in defsInfo)
