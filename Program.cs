@@ -24,6 +24,7 @@ namespace Azure_Audit
         public bool isAssigned = false;
 
     }
+    delegate void asyncDelegate(string[] srvPrinCreds);
 
     class Program
     {
@@ -107,25 +108,26 @@ namespace Azure_Audit
         }
         private static string[] GetSecretFromKeyVault(AzureServiceTokenProvider azureServiceTokenProvider, string keyVaultName)
         {
-        string srvprinappID = "appID";
-        string srvprinkey = "key";
-        string srvprindefaultSubscription = "defaultSubscription";
-        string srvprintenantID = "tenantID";
-        string omsCustomerID = "omsID";
-        string omsKey = "omsKey";
+            string srvprinappID = "appID";
+            string srvprinkey = "key";
+            string srvprindefaultSubscription = "defaultSubscription";
+            string srvprintenantID = "tenantID";
+            string omsCustomerID = "omsID";
+            string omsKey = "omsKey";
 
-        string[] arrCreds = new string[] {srvprinappID,srvprinkey,srvprindefaultSubscription,srvprintenantID,omsCustomerID,omsKey};
+            string[] arrCreds = new string[] { srvprinappID, srvprinkey, srvprindefaultSubscription, srvprintenantID, omsCustomerID, omsKey };
 
             KeyVaultClient kv = new KeyVaultClient(new KeyVaultClient.AuthenticationCallback(azureServiceTokenProvider.KeyVaultTokenCallback));
             try
             {
-                for(int i = 0; i < 6; i++){
-                var secret = kv
-                    .GetSecretAsync($"https://{keyVaultName}.vault.usgovcloudapi.net/secrets/{arrCreds[i]}").Result;
+                for (int i = 0; i < 6; i++)
+                {
+                    var secret = kv
+                        .GetSecretAsync($"https://{keyVaultName}.vault.usgovcloudapi.net/secrets/{arrCreds[i]}").Result;
 
-                arrCreds[i] = secret.Value;
+                    arrCreds[i] = secret.Value;
                 }
-                
+
             }
             catch (Exception exp)
             {
@@ -134,143 +136,154 @@ namespace Azure_Audit
             return arrCreds;
         }
 
+        public static void processRBACRules(string[] srvPrinCreds)
+        {
+            //"While" loop necessary for continuous container deployments on Windows & Linux.
+            //Not needed for Function App because function app executes on a timed trigger inherent to the platform
+
+            List<defInfo> defsInfo = new List<defInfo>();
+
+            IAzure[] getAzureCreds(int subCount, AzureCredentials azureCreds, List<ISubscription> subIDList)
+            {
+                IAzure[] azAuthCreds = new Azure[subCount];
+                int getAzureCredsIndex = 0;
+                foreach (var sub in subIDList)
+                {
+                    string sid = sub.SubscriptionId;
+                    azAuthCreds[getAzureCredsIndex] = Azure
+                        .Configure()
+                        .WithLogLevel(HttpLoggingDelegatingHandler.Level.Basic)
+                        .Authenticate(azureCreds)
+                        .WithSubscription(sub.SubscriptionId);
+                    getAzureCredsIndex++;
+                }
+
+                return azAuthCreds;
+            }
+
+            var credentials = SdkContext.AzureCredentialsFactory
+                .FromServicePrincipal(srvPrinCreds[0], srvPrinCreds[1], srvPrinCreds[3], AzureEnvironment.AzureUSGovernment)
+                .WithDefaultSubscription(srvPrinCreds[2]);
+            //.FromFile(Environment.GetEnvironmentVariable("AZURE_AUTH_LOCATION"));
+
+            var azure = Azure
+                .Configure()
+                .WithLogLevel(HttpLoggingDelegatingHandler.Level.Basic)
+                .Authenticate(credentials)
+                .WithSubscription(credentials.DefaultSubscriptionId);
+
+
+            var subList = azure.Subscriptions.List().ToList();
+            int subListCount = subList.Count - 1;
+            string refSubID = "<refSubIDGUID>";
+            string refSubName = "<refSubName>";
+            string refSubFullyQualifiedID = "<refSubFullyQualifiedID";
+            List<string> sortedSubFQIDs = new List<string>();
+            List<string> refSubFQIDs = new List<string>();
+            foreach (var sub in subList)
+            {
+                if (sub.SubscriptionId == credentials.DefaultSubscriptionId)
+                {
+                    refSubID = sub.SubscriptionId;
+                    refSubName = sub.DisplayName;
+                    refSubFullyQualifiedID = sub.Inner.Id;
+                }
+                //Grab fully qualified sub ID's that our srv principle has access too
+                refSubFQIDs.Add(sub.Inner.Id);
+            }
+            //Sort our list of fully qualified sub ID's for comparison later
+            refSubFQIDs.Sort();
+
+            //Get reference subscription role definitions: name,assignable scopes
+
+            var refSubRDefs = azure.AccessManagement.RoleDefinitions.ListByScope(refSubFullyQualifiedID);
+            //Determine count of custom role definitions for reference subscription
+            int refSubDefCount = 0;
+
+            foreach (var rDefinition in refSubRDefs)
+            {
+                if (rDefinition.Inner.RoleType.ToLower() != "builtinrole")
+                {
+                    refSubDefCount++;
+                    defInfo def = new defInfo();
+                    def.defName = rDefinition.RoleName;
+                    def.defGUID = rDefinition.Name;
+                    defsInfo.Add(def);
+                    List<string> refSubDefScopes = new List<string>();
+                    foreach (var scope in rDefinition.AssignableScopes)
+                    {
+                        refSubDefScopes.Add(scope);
+                    }
+                    refSubDefScopes.Sort();
+                    //If role definition scope does not contain all tenant subscriptions then post to oms
+                    if (!refSubFQIDs.SequenceEqual(refSubDefScopes))
+                    {
+                        json = $"[{{\"Category\":\"Warning\",\"Tenant ID: \":\"{credentials.TenantId}\",\"RBAC Custom Role Name\":\"{rDefinition.RoleName}\",\"Description\":\"Role definition scope does not include all accessible tenant subscriptions.  This role will not be avaliable for assignment for all missing subscriptions.\",\"Resolution URI\":\"https://docs.microsoft.com/en-us/azure/role-based-access-control/custom-roles-powershell\"}}]";
+                        prepForOMS(json, srvPrinCreds[4], srvPrinCreds[5]);
+                    }
+                }
+
+            }
+            if (refSubDefCount == 0)
+            {
+                refSubDefCount = -1;
+                json = $"[{{\"Category\":\"Warning\",\"Reference Subscription Name\":\"{azure.GetCurrentSubscription().DisplayName}\",\"Reference Subscription ID\":\"{azure.SubscriptionId}\",\"Description\":\"Reference subcription does not have any custom roles defined\",\"Resolution URI\":\"https://docs.microsoft.com/en-us/azure/role-based-access-control/custom-roles-powershell\"}}]";
+                prepForOMS(json, srvPrinCreds[4], srvPrinCreds[5]);
+            }
+            var removeRefSub = subList.Single(r => r.SubscriptionId == refSubID);
+            subList.Remove(removeRefSub);
+
+
+            IAzure[] creds = getAzureCreds(subCount: subListCount, azureCreds: credentials, subIDList: subList);
+
+            foreach (var cred in creds)
+            {
+
+                IEnumerable<IRoleAssignment> rAssign = azure.AccessManagement.RoleAssignments.ListByScope($"/subscriptions/{cred.SubscriptionId}");
+
+                //Check whether or not each custom role defintion is assigned in current subscription
+                foreach (var assignment in rAssign)
+                {
+                    var rdefID = assignment.RoleDefinitionId.Split("/");
+                    var isAssigned = defsInfo.SingleOrDefault(r => r.defGUID == rdefID.Last());
+                    if (isAssigned != null)
+                    {
+                        isAssigned.isAssigned = true;
+                    }
+                }
+                //Find all unassigned roles and submit to OMS
+                var unassignedRoles = defsInfo.Where(r => r.isAssigned == false);
+                foreach (var unassignedRole in unassignedRoles)
+                {
+                    json = $"[{{\"Category\":\"Warning\",\"Subscription Name\":\"{cred.GetCurrentSubscription().DisplayName}\",\"Subscription ID\":\"{cred.SubscriptionId}\",\"Unassigned Role Name\":\"{unassignedRole.defName}\",\"Description\":\"Custom role '{unassignedRole.defName}' has been defined, but is not assigned in subscription '{cred.SubscriptionId}'\",\"Resolution URI\":\"https://docs.microsoft.com/en-us/azure/role-based-access-control/custom-roles-powershell\"}}]";
+                    prepForOMS(json, srvPrinCreds[4], srvPrinCreds[5]);
+                }
+                //Reset defintion state so that the next subscription can be processed
+                foreach (var def in defsInfo)
+                {
+                    def.isAssigned = false;
+                }
+
+            }
+
+
+        }
         static void Main(string[] args)
         {
             string[] srvPrinCreds = new string[6];
             string keyVaultName = System.Environment.GetEnvironmentVariable("keyVaultName");
             AzureServiceTokenProvider azureServiceTokenProvider = new AzureServiceTokenProvider();
-            srvPrinCreds = GetSecretFromKeyVault(azureServiceTokenProvider,keyVaultName);            
 
+            srvPrinCreds = GetSecretFromKeyVault(azureServiceTokenProvider, keyVaultName);
+
+            //Begin rule processing
             while (true)
             {
-
-
-                List<defInfo> defsInfo = new List<defInfo>();
-
-                IAzure[] getAzureCreds(int subCount, AzureCredentials azureCreds, List<ISubscription> subIDList)
-                {
-                    IAzure[] azAuthCreds = new Azure[subCount];
-                    int getAzureCredsIndex = 0;
-                    foreach (var sub in subIDList)
-                    {
-                        string sid = sub.SubscriptionId;
-                        azAuthCreds[getAzureCredsIndex] = Azure
-                            .Configure()
-                            .WithLogLevel(HttpLoggingDelegatingHandler.Level.Basic)
-                            .Authenticate(azureCreds)
-                            .WithSubscription(sub.SubscriptionId);
-                        getAzureCredsIndex++;
-                    }
-
-                    return azAuthCreds;
-                }
-
-                var credentials = SdkContext.AzureCredentialsFactory
-                    .FromServicePrincipal(srvPrinCreds[0],srvPrinCreds[1],srvPrinCreds[3],AzureEnvironment.AzureUSGovernment)
-                    .WithDefaultSubscription(srvPrinCreds[2]);
-                    //.FromFile(Environment.GetEnvironmentVariable("AZURE_AUTH_LOCATION"));
-                
-                var azure = Azure
-                    .Configure()
-                    .WithLogLevel(HttpLoggingDelegatingHandler.Level.Basic)
-                    .Authenticate(credentials)
-                    .WithSubscription(credentials.DefaultSubscriptionId);
-
-
-                var subList = azure.Subscriptions.List().ToList();
-                int subListCount = subList.Count - 1;
-                string refSubID = "<refSubIDGUID>";
-                string refSubName = "<refSubName>";
-                string refSubFullyQualifiedID = "<refSubFullyQualifiedID";
-                List<string> sortedSubFQIDs = new List<string>();
-                List<string> refSubFQIDs = new List<string>();
-                foreach (var sub in subList)
-                {
-                    if (sub.SubscriptionId == credentials.DefaultSubscriptionId)
-                    {
-                        refSubID = sub.SubscriptionId;
-                        refSubName = sub.DisplayName;
-                        refSubFullyQualifiedID = sub.Inner.Id;
-                    }
-                    //Grab fully qualified sub ID's that our srv principle has access too
-                    refSubFQIDs.Add(sub.Inner.Id);
-                }
-                //Sort our list of fully qualified sub ID's for comparison later
-                refSubFQIDs.Sort();
-
-                //Get reference subscription role definitions: name,assignable scopes
-
-                var refSubRDefs = azure.AccessManagement.RoleDefinitions.ListByScope(refSubFullyQualifiedID);
-                //Determine count of custom role definitions for reference subscription
-                int refSubDefCount = 0;
-
-                foreach (var rDefinition in refSubRDefs)
-                {
-                    if (rDefinition.Inner.RoleType.ToLower() != "builtinrole")
-                    {
-                        refSubDefCount++;
-                        defInfo def = new defInfo();
-                        def.defName = rDefinition.RoleName;
-                        def.defGUID = rDefinition.Name;
-                        defsInfo.Add(def);
-                        List<string> refSubDefScopes = new List<string>();
-                        foreach (var scope in rDefinition.AssignableScopes)
-                        {
-                            refSubDefScopes.Add(scope);
-                        }
-                        refSubDefScopes.Sort();
-                        //If role definition scope does not contain all tenant subscriptions then post to oms
-                        if (!refSubFQIDs.SequenceEqual(refSubDefScopes))
-                        {
-                            json = $"[{{\"Category\":\"Warning\",\"Tenant ID: \":\"{credentials.TenantId}\",\"RBAC Custom Role Name\":\"{rDefinition.RoleName}\",\"Description\":\"Role definition scope does not include all accessible tenant subscriptions.  This role will not be avaliable for assignment for all missing subscriptions.\",\"Resolution URI\":\"https://docs.microsoft.com/en-us/azure/role-based-access-control/custom-roles-powershell\"}}]";
-                            prepForOMS(json,srvPrinCreds[4],srvPrinCreds[5]);
-                        }
-                    }
-
-                }
-                if (refSubDefCount == 0)
-                {
-                    refSubDefCount = -1;
-                    json = $"[{{\"Category\":\"Warning\",\"Reference Subscription Name\":\"{azure.GetCurrentSubscription().DisplayName}\",\"Reference Subscription ID\":\"{azure.SubscriptionId}\",\"Description\":\"Reference subcription does not have any custom roles defined\",\"Resolution URI\":\"https://docs.microsoft.com/en-us/azure/role-based-access-control/custom-roles-powershell\"}}]";
-                    prepForOMS(json,srvPrinCreds[4],srvPrinCreds[5]);
-                }
-                var removeRefSub = subList.Single(r => r.SubscriptionId == refSubID);
-                subList.Remove(removeRefSub);
-
-
-                IAzure[] creds = getAzureCreds(subCount: subListCount, azureCreds: credentials, subIDList: subList);
-
-                foreach (var cred in creds)
-                {
-
-                    IEnumerable<IRoleAssignment> rAssign = azure.AccessManagement.RoleAssignments.ListByScope($"/subscriptions/{cred.SubscriptionId}");
-
-                    //Check whether or not each custom role defintion is assigned in current subscription
-                    foreach (var assignment in rAssign)
-                    {
-                        var rdefID = assignment.RoleDefinitionId.Split("/");
-                        var isAssigned = defsInfo.SingleOrDefault(r => r.defGUID == rdefID.Last());
-                        if (isAssigned != null)
-                        {
-                            isAssigned.isAssigned = true;
-                        }
-                    }
-                    //Find all unassigned roles and submit to OMS
-                    var unassignedRoles = defsInfo.Where(r => r.isAssigned == false);
-                    foreach (var unassignedRole in unassignedRoles)
-                    {
-                        json = $"[{{\"Category\":\"Warning\",\"Subscription Name\":\"{cred.GetCurrentSubscription().DisplayName}\",\"Subscription ID\":\"{cred.SubscriptionId}\",\"Unassigned Role Name\":\"{unassignedRole.defName}\",\"Description\":\"Custom role '{unassignedRole.defName}' has been defined, but is not assigned in subscription '{cred.SubscriptionId}'\",\"Resolution URI\":\"https://docs.microsoft.com/en-us/azure/role-based-access-control/custom-roles-powershell\"}}]";
-                        prepForOMS(json,srvPrinCreds[4],srvPrinCreds[5]);
-                    }
-                    //Reset defintion state so that the next subscription can be processed
-                    foreach (var def in defsInfo)
-                    {
-                        def.isAssigned = false;
-                    }
-
-                }
-
-                System.Threading.Thread.Sleep(300001);
+                //Add function for rules processing here
+                processRBACRules(srvPrinCreds);
+                //processResourceTypeRules(srvPrinCreds);
+                //processAzureActivityRules(srvPrinCreds);
+                System.Threading.Thread.Sleep(30000);
             }
         }
     }
