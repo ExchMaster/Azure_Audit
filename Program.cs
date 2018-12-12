@@ -1,26 +1,18 @@
 ﻿using System;
 using System.Threading.Tasks;
 using System.Linq;
-using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Collections.Generic;
-using Microsoft.Rest;
 using Microsoft.Azure.KeyVault;
-using Microsoft.Azure.Management.ResourceManager;
 using Microsoft.Azure.Services.AppAuthentication;
-using Microsoft.Azure.Management.Compute.Fluent;
-using Microsoft.Azure.Management.Compute.Fluent.Models;
 using Microsoft.Azure.Management.Fluent;
-using Microsoft.Azure.Management.KeyVault.Fluent;
 using Microsoft.Azure.Management.ResourceManager.Fluent;
 using Microsoft.Azure.Management.ResourceManager.Fluent.Authentication;
 using Microsoft.Azure.Management.ResourceManager.Fluent.Core;
 using Microsoft.Azure.Management.Graph.RBAC.Fluent;
-using Microsoft.Azure.Management.Graph.RBAC.Fluent.Models;
-using Newtonsoft.Json;
 
 namespace Azure_Audit
 {
@@ -59,12 +51,6 @@ namespace Azure_Audit
         //static string json = @"[{""DemoField1"":""ForReal"",""DemoField2"":""DemoValue2""},{""DemoField3"":""DemoValue3"",""DemoField4"":""DemoValue4""}]";
         static string json = "[{\"Field1\":\"Value1\",\"Field2\":\"Value2\"},{\"Field3\":\"Value3\",\"Field4\":\"Value4\"}]";
 
-        // Update customerId to your Log Analytics workspace ID
-        /*static string customerId = "26dddbb4-2264-4b19-b327-673e47acee98";
-
-        // For sharedKey, use either the primary or the secondary Connected Sources client authentication key   
-        static string sharedKey = "WW+gvT2ubjqMnaw5P8dKSPxTQADJY4luUX9uewHpTFNj15qHAnHcXkR3cMqqlXZNKRp/TBS4+q9oPWmBudDnzA==";
- */
         // LogName is name of the event type that is being submitted to Log Analytics
         static string LogName = "Azure_Audit";
 
