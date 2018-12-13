@@ -283,7 +283,7 @@ namespace Azure_Audit
                 processRBACRules(srvPrinCreds);
                 //processResourceTypeRules(srvPrinCreds);
                 //processAzureActivityRules(srvPrinCreds);
-                System.Threading.Thread.Sleep(300001);
+                System.Threading.Thread.Sleep(30000);
             }
         }
     }
